@@ -14,6 +14,17 @@
 #define XO_DEVICE_FILE "/dev/kxo"
 #define XO_DEVICE_ATTR_FILE "/sys/class/kxo/kxo/kxo_state"
 
+
+// Exit code after 3 seconds
+#include <signal.h>
+#define ALARM_TIME 3
+void handle_alarm(int sig)
+{
+    printf("\nTime's up!\n");
+    exit(0);
+}
+
+
 static bool status_check(void)
 {
     FILE *fp = fopen(XO_STATUS_FILE, "r");
@@ -83,6 +94,9 @@ static void listen_keyboard_handler(void)
 
 int main(int argc, char *argv[])
 {
+    signal(SIGALRM, handle_alarm);
+    alarm(ALARM_TIME);
+
     if (!status_check())
         exit(1);
 
