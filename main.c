@@ -95,9 +95,10 @@ static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 /* Insert the whole chess board into the kfifo buffer */
 static void produce_board(void)
 {
-    unsigned int len = kfifo_in(&rx_fifo, draw_buffer, sizeof(draw_buffer));
-    if (unlikely(len < sizeof(draw_buffer)) && printk_ratelimit())
-        pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(draw_buffer) - len);
+    unsigned char messenger = (turn == 'X' ? 0 : N_GRIDS) + last_move;
+    unsigned int len = kfifo_in(&rx_fifo, messenger, sizeof(messenger));
+    if (unlikely(len < sizeof(messenger)) && printk_ratelimit())
+        pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(messenger) - len);
 
     pr_debug("kxo: %s: in %u/%u bytes\n", __func__, len, kfifo_len(&rx_fifo));
 }
@@ -117,33 +118,6 @@ static struct circ_buf fast_buf;
 
 static char table[N_GRIDS];
 
-/* Draw the board into draw_buffer */
-static int draw_board(char *table)
-{
-    int i = 0, k = 0;
-    draw_buffer[i++] = '\n';
-    smp_wmb();
-    draw_buffer[i++] = '\n';
-    smp_wmb();
-
-    while (i < DRAWBUFFER_SIZE) {
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
-            draw_buffer[i++] = j & 1 ? '|' : table[k++];
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
-            draw_buffer[i++] = '-';
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-    }
-
-
-    return 0;
-}
 
 /* Clear all data from the circular buffer fast_buf */
 static void fast_buf_clear(void)
@@ -176,10 +150,6 @@ static void drawboard_work_func(struct work_struct *w)
     }
     read_unlock(&attr_obj.lock);
 
-    mutex_lock(&producer_lock);
-    draw_board(table);
-    mutex_unlock(&producer_lock);
-
     /* Store data to the kfifo buffer */
     mutex_lock(&consumer_lock);
     produce_board();
@@ -190,9 +160,8 @@ static void drawboard_work_func(struct work_struct *w)
 
 static char turn;
 static int finish;
+unsigned char last_move;
 
-unsigned char last_O_move;
-unsigned char last_X_move;
 
 // MCTS algo is 'O'
 static void ai_one_work_func(struct work_struct *w)
@@ -216,7 +185,7 @@ static void ai_one_work_func(struct work_struct *w)
 
     if (move != -1) {
         WRITE_ONCE(table[move], 'O');
-        WRITE_ONCE(last_O_move, move);
+        WRITE_ONCE(last_move, move);
     }
 
     WRITE_ONCE(turn, 'X');
@@ -253,7 +222,7 @@ static void ai_two_work_func(struct work_struct *w)
 
     if (move != -1) {
         WRITE_ONCE(table[move], 'X');
-        WRITE_ONCE(last_X_move, move);
+        WRITE_ONCE(last_move, move);
     }
 
     WRITE_ONCE(turn, 'O');
@@ -355,10 +324,6 @@ static void timer_handler(struct timer_list *__timer)
             int cpu = get_cpu();
             pr_info("kxo: [CPU#%d] Drawing final board\n", cpu);
             put_cpu();
-
-            mutex_lock(&producer_lock);
-            draw_board(table);
-            mutex_unlock(&producer_lock);
 
             /* Store data to the kfifo buffer */
             mutex_lock(&consumer_lock);
