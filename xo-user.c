@@ -17,10 +17,10 @@
 
 // Exit code after 3 seconds
 #include <signal.h>
-#define ALARM_TIME 3
+#define ALARM_TIME 5
 void handle_alarm(int sig)
 {
-    printf("\nTime's up!\n");
+    printf("\nTime's up! %d seconds.\n", ALARM_TIME);
     exit(0);
 }
 
@@ -71,7 +71,7 @@ static void listen_keyboard_handler(void)
     if (read(STDIN_FILENO, &input, 1) == 1) {
         char buf[20];
         switch (input) {
-        case 16: /* Ctrl-P */
+        case 16: /* Ctrl+P */
             read(attr_fd, buf, 6);
             buf[0] = (buf[0] - '0') ? '0' : '1';
             read_attr ^= 1;
@@ -79,7 +79,7 @@ static void listen_keyboard_handler(void)
             if (!read_attr)
                 printf("Stopping to display the chess board...\n");
             break;
-        case 17: /* Ctrl-Q */
+        case 17: /* Ctrl+Q */
             read(attr_fd, buf, 6);
             buf[4] = '1';
             read_attr = false;

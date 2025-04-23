@@ -191,6 +191,10 @@ static void drawboard_work_func(struct work_struct *w)
 static char turn;
 static int finish;
 
+unsigned char last_O_move;
+unsigned char last_X_move;
+
+// MCTS algo is 'O'
 static void ai_one_work_func(struct work_struct *w)
 {
     ktime_t tv_start, tv_end;
@@ -210,8 +214,10 @@ static void ai_one_work_func(struct work_struct *w)
 
     smp_mb();
 
-    if (move != -1)
+    if (move != -1) {
         WRITE_ONCE(table[move], 'O');
+        WRITE_ONCE(last_O_move, move);
+    }
 
     WRITE_ONCE(turn, 'X');
     WRITE_ONCE(finish, 1);
@@ -225,6 +231,7 @@ static void ai_one_work_func(struct work_struct *w)
     put_cpu();
 }
 
+// negamax algo is 'X'
 static void ai_two_work_func(struct work_struct *w)
 {
     ktime_t tv_start, tv_end;
@@ -244,8 +251,10 @@ static void ai_two_work_func(struct work_struct *w)
 
     smp_mb();
 
-    if (move != -1)
+    if (move != -1) {
         WRITE_ONCE(table[move], 'X');
+        WRITE_ONCE(last_X_move, move);
+    }
 
     WRITE_ONCE(turn, 'O');
     WRITE_ONCE(finish, 1);
