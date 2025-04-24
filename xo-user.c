@@ -27,7 +27,7 @@ char table_buf[DRAWBUFFER_SIZE] =
 
 // Exit code after 3 seconds
 #include <signal.h>
-#define ALARM_TIME 3
+#define ALARM_TIME 60
 void handle_alarm(int sig)
 {
     printf("\nTime's up! %d seconds.\n", ALARM_TIME);
@@ -102,17 +102,18 @@ static void listen_keyboard_handler(void)
     close(attr_fd);
 }
 
-void user_print_board(unsigned char buf)
+void user_print_board(unsigned char buf[2])
 {
     bool flag = false;
-    if (buf & 1)
+    if (buf[1] & 1)
         flag = true;
-    buf >>= 1;
+    buf[1] >>= 1;
 
-    char turn = buf & 1 ? 'O' : 'X';
-    buf >>= 1;
+    char turn = buf[1] & 1 ? 'O' : 'X';
+    buf[1] >>= 1;
 
-    int pos = (buf / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf % BOARD_SIZE << 1);
+    int pos =
+        (buf[1] / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf[1] % BOARD_SIZE << 1);
     table_buf[pos] = turn;
 
     printf("\n\n%s", table_buf);
@@ -138,7 +139,7 @@ int main(int argc, char *argv[])
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
 
-    unsigned char buf;
+    unsigned char buf[2];
 
     fd_set readset;
     int device_fd = open(XO_DEVICE_FILE, O_RDONLY);
@@ -163,7 +164,7 @@ int main(int argc, char *argv[])
         } else if (read_attr && FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
             printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
-            read(device_fd, &buf, READ_DATA_SIZE);
+            read(device_fd, buf, READ_DATA_SIZE);
             user_print_board(buf);
         }
     }

@@ -32,7 +32,7 @@ typedef unsigned fixed_point_t;
     ((BOARD_SIZE * (BOARD_SIZE + 1) << 1) + (BOARD_SIZE * BOARD_SIZE) + \
      (BOARD_SIZE << 1))
 
-#define READ_DATA_SIZE 1
+#define READ_DATA_SIZE 2
 
 extern const line_t lines[4];
 

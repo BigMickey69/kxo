@@ -1,5 +1,5 @@
 /* kxo: A Tic-Tac-Toe Game Engine implemented as Linux kernel module */
-
+// #define DEBUG    // For viewing pr_debug logs
 #include <linux/cdev.h>
 #include <linux/circ_buf.h>
 #include <linux/interrupt.h>
@@ -98,9 +98,10 @@ unsigned char last_move;
 // LSB indicates end, 2nd Least bit indicates 'O' or 'X'
 static void produce_board(void)
 {
-    unsigned char messenger;
-    messenger = (last_move << 1 | (turn == 'O' ? 1 : 0)) << 1;
-    unsigned int len = kfifo_in(&rx_fifo, &messenger, sizeof(messenger));
+    unsigned char messenger[2];
+    messenger[0] = 0;
+    messenger[1] = (last_move << 1 | (turn == 'O' ? 1 : 0)) << 1;
+    unsigned int len = kfifo_in(&rx_fifo, messenger, sizeof(messenger));
     if (unlikely(len < sizeof(messenger)) && printk_ratelimit())
         pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(messenger) - len);
 
@@ -109,9 +110,10 @@ static void produce_board(void)
 
 static void produce_final_board(void)
 {
-    unsigned char messenger;
-    messenger = (last_move << 1 | (turn == 'O' ? 1 : 0)) << 1 | 1;
-    unsigned int len = kfifo_in(&rx_fifo, &messenger, sizeof(messenger));
+    unsigned char messenger[2];
+    messenger[0] = 0;
+    messenger[1] = (last_move << 1 | (turn == 'O' ? 1 : 0)) << 1 | 1;
+    unsigned int len = kfifo_in(&rx_fifo, messenger, sizeof(messenger));
     if (unlikely(len < sizeof(messenger)) && printk_ratelimit())
         pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(messenger) - len);
 

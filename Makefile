@@ -7,7 +7,7 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 
 GIT_HOOKS := .git/hooks/applied
-all: kmod xo-user
+all: kmod xo-user reload
 
 kmod: $(GIT_HOOKS) main.c
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
@@ -23,3 +23,9 @@ $(GIT_HOOKS):
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 	$(RM) xo-user
+
+
+reload:
+	@sudo rmmod kxo || true
+	@sudo insmod kxo.ko
+	@sudo dmesg -C
