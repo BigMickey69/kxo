@@ -15,9 +15,19 @@
 #define XO_DEVICE_ATTR_FILE "/sys/class/kxo/kxo/kxo_state"
 
 
+char table_buf[DRAWBUFFER_SIZE] =
+    " | | | \n"
+    "-------\n"
+    " | | | \n"
+    "-------\n"
+    " | | | \n"
+    "-------\n"
+    " | | | \n"
+    "-------\n";
+
 // Exit code after 3 seconds
 #include <signal.h>
-#define ALARM_TIME 5
+#define ALARM_TIME 3
 void handle_alarm(int sig)
 {
     printf("\nTime's up! %d seconds.\n", ALARM_TIME);
@@ -92,6 +102,30 @@ static void listen_keyboard_handler(void)
     close(attr_fd);
 }
 
+void user_print_board(unsigned char buf)
+{
+    bool flag = false;
+    if (buf & 1)
+        flag = true;
+    buf >>= 1;
+
+    char turn = buf & 1 ? 'O' : 'X';
+    buf >>= 1;
+
+    int pos = (buf / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf % BOARD_SIZE << 1);
+    table_buf[pos] = turn;
+
+    printf("\n\n%s", table_buf);
+    // reset board if the End
+    if (flag) {
+        for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
+             j += (BOARD_SIZE << 2)) {
+            for (int i = 0; i < BOARD_SIZE; i++)
+                table_buf[(i << 1) + j] = ' ';
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     signal(SIGALRM, handle_alarm);
@@ -104,7 +138,7 @@ int main(int argc, char *argv[])
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
 
-    char display_buf[DRAWBUFFER_SIZE];
+    unsigned char buf;
 
     fd_set readset;
     int device_fd = open(XO_DEVICE_FILE, O_RDONLY);
@@ -129,8 +163,8 @@ int main(int argc, char *argv[])
         } else if (read_attr && FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
             printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
-            read(device_fd, display_buf, DRAWBUFFER_SIZE);
-            printf("%s", display_buf);
+            read(device_fd, &buf, READ_DATA_SIZE);
+            user_print_board(buf);
         }
     }
 

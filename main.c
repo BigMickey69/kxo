@@ -78,8 +78,6 @@ static int major;
 static struct class *kxo_class;
 static struct cdev kxo_cdev;
 
-static char draw_buffer[DRAWBUFFER_SIZE];
-
 /* Data are stored into a kfifo buffer before passing them to the userspace */
 static DECLARE_KFIFO_PTR(rx_fifo, unsigned char);
 
@@ -92,11 +90,28 @@ static DEFINE_MUTEX(read_lock);
 /* Wait queue to implement blocking I/O from userspace */
 static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 
-/* Insert the whole chess board into the kfifo buffer */
+
+static char turn;
+static int finish;
+unsigned char last_move;
+
+// LSB indicates end, 2nd Least bit indicates 'O' or 'X'
 static void produce_board(void)
 {
-    unsigned char messenger = (turn == 'X' ? 0 : N_GRIDS) + last_move;
-    unsigned int len = kfifo_in(&rx_fifo, messenger, sizeof(messenger));
+    unsigned char messenger;
+    messenger = (last_move << 1 | (turn == 'O' ? 1 : 0)) << 1;
+    unsigned int len = kfifo_in(&rx_fifo, &messenger, sizeof(messenger));
+    if (unlikely(len < sizeof(messenger)) && printk_ratelimit())
+        pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(messenger) - len);
+
+    pr_debug("kxo: %s: in %u/%u bytes\n", __func__, len, kfifo_len(&rx_fifo));
+}
+
+static void produce_final_board(void)
+{
+    unsigned char messenger;
+    messenger = (last_move << 1 | (turn == 'O' ? 1 : 0)) << 1 | 1;
+    unsigned int len = kfifo_in(&rx_fifo, &messenger, sizeof(messenger));
     if (unlikely(len < sizeof(messenger)) && printk_ratelimit())
         pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(messenger) - len);
 
@@ -157,10 +172,6 @@ static void drawboard_work_func(struct work_struct *w)
 
     wake_up_interruptible(&rx_wait);
 }
-
-static char turn;
-static int finish;
-unsigned char last_move;
 
 
 // MCTS algo is 'O'
@@ -327,7 +338,7 @@ static void timer_handler(struct timer_list *__timer)
 
             /* Store data to the kfifo buffer */
             mutex_lock(&consumer_lock);
-            produce_board();
+            produce_final_board();
             mutex_unlock(&consumer_lock);
 
             wake_up_interruptible(&rx_wait);
