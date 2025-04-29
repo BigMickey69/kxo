@@ -39,3 +39,13 @@ extern const line_t lines[4];
 int *available_moves(const char *table);
 char check_win(const char *t);
 fixed_point_t calculate_win_value(char win, char player);
+
+
+struct game {
+    unsigned char id;
+    char turn;
+    unsigned char finish;
+    unsigned char last_move;
+    char table[N_GRIDS];
+    unsigned char won;
+};

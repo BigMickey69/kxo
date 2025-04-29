@@ -1,6 +1,17 @@
 {
     "files.associations": {
         "game.h": "c",
-        "select.h": "c"
-    }
+        "select.h": "c",
+        "array": "c",
+        "deque": "c",
+        "string": "c",
+        "unordered_map": "c",
+        "vector": "c",
+        "string_view": "c",
+        "initializer_list": "c",
+        "negamax.h": "c"
+    },
+    "C_Cpp.default.defines": [
+        "__init="
+    ]
 }

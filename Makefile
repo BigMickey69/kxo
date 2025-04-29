@@ -23,6 +23,7 @@ $(GIT_HOOKS):
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 	$(RM) xo-user
+	@sudo rmmod kxo || true
 
 
 reload:

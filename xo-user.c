@@ -104,10 +104,15 @@ static void listen_keyboard_handler(void)
 
 void user_print_board(unsigned char buf[2])
 {
-    bool flag = false;
-    if (buf[1] & 1)
-        flag = true;
-    buf[1] >>= 1;
+    printf("Trying to print board now...\n");
+    if (buf[0] & 0x80) {
+        for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
+             j += (BOARD_SIZE << 2)) {
+            for (int i = 0; i < BOARD_SIZE; i++)
+                table_buf[(i << 1) + j] = ' ';
+        }
+        return;
+    }
 
     char turn = buf[1] & 1 ? 'O' : 'X';
     buf[1] >>= 1;
@@ -116,15 +121,9 @@ void user_print_board(unsigned char buf[2])
         (buf[1] / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf[1] % BOARD_SIZE << 1);
     table_buf[pos] = turn;
 
+    printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
+    printf("============= Game: %d =============\n", 1);
     printf("\n\n%s", table_buf);
-    // reset board if the End
-    if (flag) {
-        for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
-             j += (BOARD_SIZE << 2)) {
-            for (int i = 0; i < BOARD_SIZE; i++)
-                table_buf[(i << 1) + j] = ' ';
-        }
-    }
 }
 
 int main(int argc, char *argv[])
@@ -152,18 +151,20 @@ int main(int argc, char *argv[])
         FD_SET(STDIN_FILENO, &readset);
         FD_SET(device_fd, &readset);
 
+        printf("ok, starting to read\n");
         int result = select(max_fd + 1, &readset, NULL, NULL, NULL);
         if (result < 0) {
             printf("Error with select system call\n");
             exit(1);
         }
 
+        printf("Probably read something\n");
+
         if (FD_ISSET(STDIN_FILENO, &readset)) {
             FD_CLR(STDIN_FILENO, &readset);
             listen_keyboard_handler();
         } else if (read_attr && FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
-            printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
             read(device_fd, buf, READ_DATA_SIZE);
             user_print_board(buf);
         }
