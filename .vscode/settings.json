@@ -9,7 +9,8 @@
         "vector": "c",
         "string_view": "c",
         "initializer_list": "c",
-        "negamax.h": "c"
+        "negamax.h": "c",
+        "version.h": "c"
     },
     "C_Cpp.default.defines": [
         "__init="

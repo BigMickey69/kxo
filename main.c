@@ -17,9 +17,8 @@
 #include "mcts.h"
 #include "negamax.h"
 
-#define MAX_GAMES 8
-int game_count = 1;
-int new_game_count = 1;
+#include "gamecount.h"
+
 static struct game games[MAX_GAMES];
 
 struct ai_work {
@@ -51,7 +50,7 @@ MODULE_DESCRIPTION("In-kernel Tic-Tac-Toe game engine v0.2");
 
 #define NR_KMLDRV 1
 
-static int delay = 100; /* time (in ms) to generate an event */
+static int delay = 200; /* time (in ms) to generate an event */
 
 /* Declare kernel module attribute for sysfs */
 
@@ -120,14 +119,17 @@ static struct workqueue_struct *kxo_workqueue;
 
 
 // LSB indicates 'O' or 'X'
-static void produce_board(struct game *g)
+static void produce_board(const struct game *g)
 {
     unsigned char messenger[2];
+    mutex_lock(&game_lock[g->id]);
+    mutex_lock(&consumer_lock);
+
     messenger[0] = g->id;
     messenger[1] = g->last_move << 1 | (g->turn == 'O' ? 1 : 0);
-
-    mutex_lock(&consumer_lock);
     unsigned int len = kfifo_in(&rx_fifo, messenger, sizeof(messenger));
+
+    mutex_unlock(&game_lock[g->id]);
     mutex_unlock(&consumer_lock);
 
     if (unlikely(len < sizeof(messenger)) && printk_ratelimit())
@@ -181,7 +183,7 @@ static void drawboard_work_func(struct work_struct *w)
 
     /* Store data to the kfifo buffer */
     struct ai_work *aw = container_of(w, struct ai_work, work);
-    struct game *g = aw->game;
+    const struct game *g = aw->game;
 
     produce_board(g);
 
@@ -233,7 +235,7 @@ static void ai_one_work_func(struct work_struct *w)
             (unsigned long long) nsecs >> 10, g->id);
     put_cpu();
 
-    queue_work(kxo_workqueue, &drawboard_works[g->id].work);
+    // queue_work(kxo_workqueue, &drawboard_works[g->id].work);
 }
 
 // negamax algo is 'X'
@@ -280,7 +282,7 @@ static void ai_two_work_func(struct work_struct *w)
             (unsigned long long) nsecs >> 10);
     put_cpu();
 
-    queue_work(kxo_workqueue, &drawboard_works[g->id].work);
+    // queue_work(kxo_workqueue, &drawboard_works[g->id].work);
 }
 
 /* Work item: holds a pointer to the function that is going to be executed
@@ -303,24 +305,12 @@ static void game_tasklet_func(unsigned long __data)
 {
     int won_count = 0;
     for (int i = 0; i < game_count; i++) {
-        struct game *g = &games[i];
-
-        if (g->won) {
+        const struct game *g = &games[i];
+        if (g->won)
             won_count++;
-            continue;
-        }
-
-
-        if (g->finish && g->turn == 'O') {
-            WRITE_ONCE(g->finish, 0);
-            queue_work(kxo_workqueue, &ai_one_works[i].work);
-        } else if (g->finish && g->turn == 'X') {
-            WRITE_ONCE(g->finish, 0);
-            queue_work(kxo_workqueue, &ai_two_works[i].work);
-        }
-        // queue_work(kxo_workqueue, &drawboard_works[i].work);
     }
 
+    // the games have finished
     if (won_count == game_count) {
         unsigned char reset_msg[2];
         reset_msg[0] = 0b10000000;
@@ -338,6 +328,22 @@ static void game_tasklet_func(unsigned long __data)
             games[i].turn = 'O';
             games[i].won = 0;
         }
+        return;  // return early
+    }
+
+
+
+    for (int i = 0; i < game_count; i++) {
+        struct game *g = &games[i];
+
+        if (g->finish && g->turn == 'O') {
+            WRITE_ONCE(g->finish, 0);
+            queue_work(kxo_workqueue, &ai_one_works[i].work);
+        } else if (g->finish && g->turn == 'X') {
+            WRITE_ONCE(g->finish, 0);
+            queue_work(kxo_workqueue, &ai_two_works[i].work);
+        }
+        queue_work(kxo_workqueue, &drawboard_works[i].work);
     }
 }
 
@@ -361,6 +367,7 @@ static void timer_handler(struct timer_list *__timer)
 
     tv_start = ktime_get();
 
+    game_count = new_game_count;
     // Just mod the next timer.
     tasklet_schedule(&game_tasklet);
     mod_timer(&timer, jiffies + msecs_to_jiffies(delay));
@@ -375,7 +382,7 @@ static void timer_handler(struct timer_list *__timer)
     local_irq_enable();
 }
 
-static ssize_t kxo_read(struct file *file,
+static ssize_t kxo_read(const struct file *file,
                         char __user *buf,
                         size_t count,
                         loff_t *ppos)

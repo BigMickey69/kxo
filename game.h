@@ -30,7 +30,7 @@ typedef unsigned fixed_point_t;
 #define DRAW_SIZE (N_GRIDS + BOARD_SIZE)
 #define DRAWBUFFER_SIZE                                                 \
     ((BOARD_SIZE * (BOARD_SIZE + 1) << 1) + (BOARD_SIZE * BOARD_SIZE) + \
-     (BOARD_SIZE << 1))
+     (BOARD_SIZE << 1) + 1)
 
 #define READ_DATA_SIZE 2
 

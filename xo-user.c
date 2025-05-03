@@ -14,8 +14,9 @@
 #define XO_DEVICE_FILE "/dev/kxo"
 #define XO_DEVICE_ATTR_FILE "/sys/class/kxo/kxo/kxo_state"
 
-
-char table_buf[DRAWBUFFER_SIZE] =
+#include "gamecount.h"
+char table_buf[MAX_GAMES][DRAWBUFFER_SIZE];
+char empty_board[DRAWBUFFER_SIZE] =
     " | | | \n"
     "-------\n"
     " | | | \n"
@@ -27,7 +28,7 @@ char table_buf[DRAWBUFFER_SIZE] =
 
 // Exit code after 3 seconds
 #include <signal.h>
-#define ALARM_TIME 60
+#define ALARM_TIME -1
 void handle_alarm(int sig)
 {
     printf("\nTime's up! %d seconds.\n", ALARM_TIME);
@@ -102,34 +103,59 @@ static void listen_keyboard_handler(void)
     close(attr_fd);
 }
 
+
+void printer()
+{
+    printf("\033[2J\033[H");  // better escape, '[2J' clears entire screen while
+                              // '[H' moves to top left
+    for (int i = 0; i < game_count; i++) {
+        printf("============= Game: %d =============\n", i + 1);
+        printf("%s\n", table_buf[i]);
+    }
+    fflush(stdout);
+}
+
+
 void user_print_board(unsigned char buf[2])
 {
-    printf("Trying to print board now...\n");
+    // printf("Trying to print board now...\n");
     if (buf[0] & 0x80) {
-        for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
-             j += (BOARD_SIZE << 2)) {
-            for (int i = 0; i < BOARD_SIZE; i++)
-                table_buf[(i << 1) + j] = ' ';
+        for (int k = 0; k < game_count; k++) {
+            for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
+                 j += (BOARD_SIZE << 2)) {
+                for (int i = 0; i < BOARD_SIZE; i++)
+                    table_buf[k][(i << 1) + j] = ' ';
+            }
         }
-        return;
+        return;  // return after all boards have been reset!
     }
 
+    unsigned char id = buf[0];
     char turn = buf[1] & 1 ? 'O' : 'X';
     buf[1] >>= 1;
 
     int pos =
         (buf[1] / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf[1] % BOARD_SIZE << 1);
-    table_buf[pos] = turn;
+    table_buf[id][pos] = turn;
 
-    printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
-    printf("============= Game: %d =============\n", 1);
-    printf("\n\n%s", table_buf);
+    printf("Placed '%c' at [%d]\n", turn, pos);
+    printer();
 }
 
 int main(int argc, char *argv[])
 {
-    signal(SIGALRM, handle_alarm);
-    alarm(ALARM_TIME);
+    _Static_assert(DRAWBUFFER_SIZE >= sizeof(empty_board),
+                   "DRAWBUFFER_SIZE too small!");
+
+    for (int i = 0; i < MAX_GAMES; i++)
+        memcpy(table_buf[i], empty_board, sizeof(empty_board));
+
+
+    if (ALARM_TIME > 0) {
+        signal(SIGALRM, handle_alarm);
+        alarm(ALARM_TIME);
+    }
+
 
     if (!status_check())
         exit(1);
@@ -151,14 +177,14 @@ int main(int argc, char *argv[])
         FD_SET(STDIN_FILENO, &readset);
         FD_SET(device_fd, &readset);
 
-        printf("ok, starting to read\n");
+        // printf("ok, starting to read\n");
         int result = select(max_fd + 1, &readset, NULL, NULL, NULL);
         if (result < 0) {
             printf("Error with select system call\n");
             exit(1);
         }
 
-        printf("Probably read something\n");
+        // printf("Probably read something\n");
 
         if (FD_ISSET(STDIN_FILENO, &readset)) {
             FD_CLR(STDIN_FILENO, &readset);
