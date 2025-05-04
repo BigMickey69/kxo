@@ -47,5 +47,4 @@ struct game {
     unsigned char finish;
     unsigned char last_move;
     char table[N_GRIDS];
-    unsigned char won;
 };

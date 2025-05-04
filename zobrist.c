@@ -1,4 +1,5 @@
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 
 #include "zobrist.h"
 
@@ -7,6 +8,7 @@ u64 zobrist_table[N_GRIDS][2];
 #define HASH(key) ((key) % HASH_TABLE_SIZE)
 
 static struct hlist_head *hash_table;
+static DEFINE_SPINLOCK(zobrist_lock);
 
 /* See https://github.com/wangyi-fudan/wyhash
  */
@@ -46,32 +48,52 @@ void zobrist_init(void)
 
 zobrist_entry_t *zobrist_get(u64 key)
 {
-    unsigned long long hash_key = HASH(key);
-
-    if (hlist_empty(&hash_table[hash_key]))
+    if (!hash_table) {
+        pr_info("kxo: ERROR, hash_table is NULL in zobrist.c\n");
         return NULL;
+    }
+    unsigned long flags;  // for spinlock
+    unsigned long long hash_key = HASH(key);
 
     zobrist_entry_t *entry = NULL;
 
-    hlist_for_each_entry(entry, &hash_table[hash_key], ht_list) {
-        if (entry->key == key)
-            return entry;
+    spin_lock_irqsave(&zobrist_lock, flags);  // lock
+    if (!hlist_empty(&hash_table[hash_key])) {
+        hlist_for_each_entry(entry, &hash_table[hash_key], ht_list) {
+            if (entry->key == key) {
+                // unlock before return
+                spin_unlock_irqrestore(&zobrist_lock, flags);
+                return entry;
+            }
+        }
     }
+    spin_unlock_irqrestore(&zobrist_lock, flags);  // unlock
     return NULL;
 }
 
 void zobrist_put(u64 key, int score, int move)
 {
+    if (!hash_table)  // null check for safety
+        return;
+    unsigned long flags;  // for spinlock
     unsigned long long hash_key = HASH(key);
     zobrist_entry_t *new_entry = kmalloc(sizeof(zobrist_entry_t), GFP_KERNEL);
     new_entry->key = key;
     new_entry->move = move;
     new_entry->score = score;
+    spin_lock_irqsave(&zobrist_lock, flags);  // lock
     hlist_add_head(&new_entry->ht_list, &hash_table[hash_key]);
+    spin_unlock_irqrestore(&zobrist_lock, flags);  // unlock
 }
 
 void zobrist_clear(void)
 {
+    if (!hash_table) {
+        pr_info("kxo: ERROR, hash_table is NULL in zobrist.c\n");
+        return;
+    }
+    unsigned long flags;                      // for spinlock
+    spin_lock_irqsave(&zobrist_lock, flags);  // lock
     for (int i = 0; i < HASH_TABLE_SIZE; i++) {
         while (!hlist_empty(&hash_table[i])) {
             zobrist_entry_t *entry =
@@ -80,5 +102,15 @@ void zobrist_clear(void)
             kfree(entry);
         }
         INIT_HLIST_HEAD(&hash_table[i]);
+    }
+    spin_unlock_irqrestore(&zobrist_lock, flags);  // unlock
+}
+
+void zobrist_free(void)
+{
+    if (hash_table) {
+        zobrist_clear();
+        kfree(hash_table);
+        hash_table = NULL;
     }
 }

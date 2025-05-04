@@ -16,10 +16,13 @@
 #include "game.h"
 #include "mcts.h"
 #include "negamax.h"
+#include "zobrist.h"
 
 #include "gamecount.h"
 
 static struct game games[MAX_GAMES];
+static unsigned char check_won[MAX_GAMES];
+static atomic_t won_count;
 
 struct ai_work {
     struct work_struct work;
@@ -32,6 +35,8 @@ static struct ai_work ai_two_works[MAX_GAMES];
 static struct ai_work drawboard_works[MAX_GAMES];
 
 static struct mutex game_lock[MAX_GAMES];
+static DEFINE_MUTEX(read_lock);
+static DEFINE_MUTEX(consumer_lock);
 
 
 
@@ -105,8 +110,7 @@ static DECLARE_KFIFO_PTR(rx_fifo, unsigned char);
  * only one concurrent reader and one concurrent writer. Writes are serialized
  * from the interrupt context, readers are serialized using this mutex.
  */
-static DEFINE_MUTEX(read_lock);
-static DEFINE_MUTEX(consumer_lock);
+
 
 /* Wait queue to implement blocking I/O from userspace */
 static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
@@ -122,14 +126,12 @@ static struct workqueue_struct *kxo_workqueue;
 static void produce_board(const struct game *g)
 {
     unsigned char messenger[2];
-    mutex_lock(&game_lock[g->id]);
     mutex_lock(&consumer_lock);
 
     messenger[0] = g->id;
     messenger[1] = g->last_move << 1 | (g->turn == 'O' ? 1 : 0);
     unsigned int len = kfifo_in(&rx_fifo, messenger, sizeof(messenger));
 
-    mutex_unlock(&game_lock[g->id]);
     mutex_unlock(&consumer_lock);
 
     if (unlikely(len < sizeof(messenger)) && printk_ratelimit())
@@ -157,7 +159,7 @@ static void fast_buf_clear(void)
 }
 
 /* Workqueue handler: executed by a kernel thread */
-static void drawboard_work_func(struct work_struct *w)
+static void drawboard_work_func(struct game *g)
 {
     int cpu;
 
@@ -180,10 +182,6 @@ static void drawboard_work_func(struct work_struct *w)
         return;
     }
     read_unlock(&attr_obj.lock);
-
-    /* Store data to the kfifo buffer */
-    struct ai_work *aw = container_of(w, struct ai_work, work);
-    const struct game *g = aw->game;
 
     produce_board(g);
 
@@ -209,7 +207,11 @@ static void ai_one_work_func(struct work_struct *w)
     struct ai_work *work = container_of(w, struct ai_work, work);
     struct game *g = work->game;
 
+
     mutex_lock(&game_lock[g->id]);
+    if (unlikely(check_won[g->id]))
+        goto exit;
+
     int move;
     WRITE_ONCE(move, mcts(g->table, 'O'));
 
@@ -224,18 +226,21 @@ static void ai_one_work_func(struct work_struct *w)
     WRITE_ONCE(g->finish, 1);
     smp_wmb();
 
-    if (check_win(g->table) != ' ')
-        g->won = 1;
+    if (check_win(g->table) != ' ') {
+        WRITE_ONCE(check_won[g->id], 1);
+        atomic_inc(&won_count);
+    }
 
+    smp_wmb();
+    drawboard_work_func(g);
+
+exit:
     mutex_unlock(&game_lock[g->id]);
     tv_end = ktime_get();
-
     nsecs = (s64) ktime_to_ns(ktime_sub(tv_end, tv_start));
-    pr_info("kxo: [CPU#%d] doing %s for %llu usec(game %u)\n", cpu, __func__,
-            (unsigned long long) nsecs >> 10, g->id);
+    pr_info("kxo: [CPU#%d] did %s for %llu usec(game %u)\n", cpu, __func__,
+            (unsigned long long) nsecs >> 10, g->id + 1);
     put_cpu();
-
-    // queue_work(kxo_workqueue, &drawboard_works[g->id].work);
 }
 
 // negamax algo is 'X'
@@ -257,6 +262,10 @@ static void ai_two_work_func(struct work_struct *w)
     struct game *g = work->game;
 
     mutex_lock(&game_lock[g->id]);
+
+    if (unlikely(check_won[g->id]))
+        goto exit;
+
     int move;
     WRITE_ONCE(move, negamax_predict(g->table, 'X').move);
 
@@ -271,18 +280,22 @@ static void ai_two_work_func(struct work_struct *w)
     WRITE_ONCE(g->finish, 1);
     smp_wmb();
 
-    if (check_win(g->table) != ' ')
-        g->won = 1;
+    if (check_win(g->table) != ' ') {
+        WRITE_ONCE(check_won[g->id], 1);
+        atomic_inc(&won_count);
+    }
 
+    smp_wmb();
+    drawboard_work_func(g);
+
+exit:
     mutex_unlock(&game_lock[g->id]);
     tv_end = ktime_get();
 
     nsecs = (s64) ktime_to_ns(ktime_sub(tv_end, tv_start));
-    pr_info("kxo: [CPU#%d] end doing %s for %llu usec\n", cpu, __func__,
+    pr_info("kxo: [CPU#%d] did %s for %llu usec\n", cpu, __func__,
             (unsigned long long) nsecs >> 10);
     put_cpu();
-
-    // queue_work(kxo_workqueue, &drawboard_works[g->id].work);
 }
 
 /* Work item: holds a pointer to the function that is going to be executed
@@ -303,15 +316,10 @@ static DECLARE_WORK(ai_two_work, ai_two_work_func);
  */
 static void game_tasklet_func(unsigned long __data)
 {
-    int won_count = 0;
-    for (int i = 0; i < game_count; i++) {
-        const struct game *g = &games[i];
-        if (g->won)
-            won_count++;
-    }
-
+    pr_info("kxo: started game_tasklet_func...\n");
     // the games have finished
-    if (won_count == game_count) {
+    if (atomic_read(&won_count) == game_count) {
+        atomic_set(&won_count, 0);
         unsigned char reset_msg[2];
         reset_msg[0] = 0b10000000;
         reset_msg[1] = 0;
@@ -322,11 +330,11 @@ static void game_tasklet_func(unsigned long __data)
 
         wake_up_interruptible(&rx_wait);
 
+        memset(check_won, 0, sizeof(check_won));
         for (int i = 0; i < game_count; i++) {
             memset(games[i].table, ' ', N_GRIDS);
             games[i].finish = 1;
             games[i].turn = 'O';
-            games[i].won = 0;
         }
         return;  // return early
     }
@@ -336,14 +344,17 @@ static void game_tasklet_func(unsigned long __data)
     for (int i = 0; i < game_count; i++) {
         struct game *g = &games[i];
 
-        if (g->finish && g->turn == 'O') {
+        int finish = READ_ONCE(g->finish);
+        char turn = READ_ONCE(g->turn);
+
+        if (finish && turn == 'O') {
             WRITE_ONCE(g->finish, 0);
             queue_work(kxo_workqueue, &ai_one_works[i].work);
-        } else if (g->finish && g->turn == 'X') {
+        } else if (finish && turn == 'X') {
             WRITE_ONCE(g->finish, 0);
             queue_work(kxo_workqueue, &ai_two_works[i].work);
         }
-        queue_work(kxo_workqueue, &drawboard_works[i].work);
+        // queue_work(kxo_workqueue, &drawboard_works[i].work);
     }
 }
 
@@ -367,7 +378,6 @@ static void timer_handler(struct timer_list *__timer)
 
     tv_start = ktime_get();
 
-    game_count = new_game_count;
     // Just mod the next timer.
     tasklet_schedule(&game_tasklet);
     mod_timer(&timer, jiffies + msecs_to_jiffies(delay));
@@ -382,7 +392,7 @@ static void timer_handler(struct timer_list *__timer)
     local_irq_enable();
 }
 
-static ssize_t kxo_read(const struct file *file,
+static ssize_t kxo_read(struct file *file,
                         char __user *buf,
                         size_t count,
                         loff_t *ppos)
@@ -521,7 +531,7 @@ static int __init kxo_init(void)
         // init locks
         mutex_init(&game_lock[i]);
 
-        games[i] = (struct game){.id = i, .turn = 'O', .finish = 1, .won = 0};
+        games[i] = (struct game){.id = i, .turn = 'O', .finish = 1};
         memset(games[i].table, ' ', N_GRIDS);
 
         INIT_WORK(&ai_one_works[i].work, ai_one_work_func);
@@ -530,8 +540,8 @@ static int __init kxo_init(void)
         INIT_WORK(&ai_two_works[i].work, ai_two_work_func);
         ai_two_works[i].game = &games[i];
 
-        INIT_WORK(&drawboard_works[i].work, drawboard_work_func);
-        drawboard_works[i].game = &games[i];
+        // INIT_WORK(&drawboard_works[i].work, drawboard_work_func);
+        // drawboard_works[i].game = &games[i];
     }
 
     attr_obj.display = '1';
@@ -567,6 +577,8 @@ static void __exit kxo_exit(void)
     class_destroy(kxo_class);
     cdev_del(&kxo_cdev);
     unregister_chrdev_region(dev_id, NR_KMLDRV);
+
+    zobrist_free();
 
     kfifo_free(&rx_fifo);
     pr_info("kxo: unloaded\n");

@@ -1,6 +1,5 @@
-#include <linux/slab.h>
-
 #include "game.h"
+#include <linux/slab.h>
 
 
 const line_t lines[4] = {

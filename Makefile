@@ -28,5 +28,5 @@ clean:
 
 reload:
 	@sudo rmmod kxo || true
-	@sudo insmod kxo.ko
 	@sudo dmesg -C
+	@sudo insmod kxo.ko

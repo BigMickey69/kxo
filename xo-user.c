@@ -120,6 +120,7 @@ void user_print_board(unsigned char buf[2])
 {
     // printf("Trying to print board now...\n");
     if (buf[0] & 0x80) {
+        printf("Games have ended! Resesting boards...\n");
         for (int k = 0; k < game_count; k++) {
             for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
                  j += (BOARD_SIZE << 2)) {
@@ -172,19 +173,20 @@ int main(int argc, char *argv[])
     read_attr = true;
     end_attr = false;
 
+    printf("ok, starting now...\n");
     while (!end_attr) {
         FD_ZERO(&readset);
         FD_SET(STDIN_FILENO, &readset);
         FD_SET(device_fd, &readset);
 
-        // printf("ok, starting to read\n");
+        printf("ok, starting to read\n");
         int result = select(max_fd + 1, &readset, NULL, NULL, NULL);
         if (result < 0) {
             printf("Error with select system call\n");
             exit(1);
         }
 
-        // printf("Probably read something\n");
+        printf("Probably read something\n");
 
         if (FD_ISSET(STDIN_FILENO, &readset)) {
             FD_CLR(STDIN_FILENO, &readset);

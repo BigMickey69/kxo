@@ -19,3 +19,4 @@ void zobrist_init(void);
 zobrist_entry_t *zobrist_get(u64 key);
 void zobrist_put(u64 key, int score, int move);
 void zobrist_clear(void);
+void zobrist_free(void);
