@@ -12,7 +12,9 @@
         "negamax.h": "c",
         "version.h": "c",
         "workqueue.h": "c",
-        "vmalloc.h": "c"
+        "vmalloc.h": "c",
+        "signal.h": "c",
+        "cerrno": "c"
     },
     "C_Cpp.default.defines": [
         "__init="
