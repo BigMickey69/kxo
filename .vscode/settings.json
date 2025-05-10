@@ -12,7 +12,8 @@
         "negamax.h": "c",
         "version.h": "c",
         "workqueue.h": "c",
-        "vmalloc.h": "c"
+        "vmalloc.h": "c",
+        "setjmp.h": "c"
     },
     "C_Cpp.default.defines": [
         "__init="
