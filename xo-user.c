@@ -11,6 +11,7 @@
 
 #include "game.h"
 #include "gamecount.h"
+#include "log.h"
 
 #define XO_STATUS_FILE "/sys/module/kxo/initstate"
 #define XO_DEVICE_FILE "/dev/kxo"
@@ -99,7 +100,7 @@ static int device_fd;
 
 static void update_board_and_stats(unsigned const char buf[READ_DATA_SIZE])
 {
-    if (buf[0] & 0x80) {
+    if (buf[0] & 0b10000000) {
         printf("Games have ended! Resesting boards...\n");
         for (int k = 0; k < game_count; k++) {
             for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
@@ -107,7 +108,7 @@ static void update_board_and_stats(unsigned const char buf[READ_DATA_SIZE])
                 for (int i = 0; i < BOARD_SIZE; i++)
                     table_buf[k][(i << 1) + j] = ' ';
             }
-            memset(move_logs[k], 0, sizeof(move_logs[k]));
+            memset(move_logs[k], 0, sizeof(move_logs[0]));
         }
         memset(log_count, 0, sizeof(log_count));
         return;  // return after all boards have been reset!
@@ -119,15 +120,14 @@ static void update_board_and_stats(unsigned const char buf[READ_DATA_SIZE])
 
     // 1) update board buffer
     int row = mv / BOARD_SIZE, col = mv % BOARD_SIZE;
-    int pos =
-        (buf[1] / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf[1] % BOARD_SIZE << 1);
+    int pos = (mv / BOARD_SIZE) * (BOARD_SIZE << 2) + (mv % BOARD_SIZE << 1);
     table_buf[g][pos] = turn;
 
     // 2) log move (e.g. "A1")
     if (log_count[g] < MAX_MOVES) {
         char m[3] = {'A' + row, '1' + col, '\0'};
         memcpy(move_logs[g][log_count[g]++].move, m, sizeof(m));
-        printf("Logged move %s: '%c'\n", m, turn);
+        LOG_DEBUG("Logged move %s: '%c'\n", m, turn);
     }
 
     // 3) load update (stub: kernel must send timing)
@@ -168,7 +168,7 @@ static inline void repaint_screen(void)
         }
         printf("\n");
     }
-    printf("Finished printing screen >W<\n");
+    LOG_DEBUG("Finished printing screen >W<\n");
 }
 
 static void io_co(void);
@@ -204,7 +204,7 @@ static void schedule(void)
         exit(1);
     }
 
-    printf("we starting\n");
+    LOG_DEBUG("we starting\n");
     for (;;) {
         int r = setjmp(sched_env) % 3;
         if (end_attr)
@@ -219,12 +219,12 @@ static void schedule(void)
 
 static void io_co(void)
 {
-    printf("First entry in io_co!\n");
+    LOG_DEBUG("First entry in io_co!\n");
     current_coro = &coros[0];
     if (setjmp(current_coro->env) == 0)
         longjmp(sched_env, 1);
 
-    printf("in io_co\n");
+    LOG_DEBUG("in io_co\n");
     int max_fd = device_fd > STDIN_FILENO ? device_fd : STDIN_FILENO;
     unsigned char buf[2];
     fd_set rfds;
@@ -234,7 +234,6 @@ static void io_co(void)
     FD_SET(device_fd, &rfds);
 
     int result = select(max_fd + 1, &rfds, NULL, NULL, NULL);
-    printf("boom\n");
     if (result < 0) {
         printf("Error with select system call\n");
         exit(1);
@@ -251,6 +250,9 @@ static void io_co(void)
             end_attr = true;
     }
 
+    if (pause_attr)
+        longjmp(sched_env, 1);
+
     // drain device
     if (FD_ISSET(device_fd, &rfds)) {
         FD_CLR(device_fd, &rfds);
@@ -263,13 +265,13 @@ static void io_co(void)
 
 static void clock_co(void)
 {
-    printf("First entry in clock_co!\n");
+    LOG_DEBUG("First entry in clock_co!\n");
     current_coro = &coros[1];
     if (setjmp(current_coro->env) == 0)
         longjmp(sched_env, 2);
 
 
-    printf("In clock_co\n");
+    LOG_DEBUG("In clock_co\n");
     time_t now = time(NULL);
     const struct tm *tm_now = localtime(&now);
     if (tm_now) {
@@ -284,16 +286,13 @@ static void clock_co(void)
 
 static void display_co(void)
 {
-    printf("First entry in display_co!\n");
+    LOG_DEBUG("First entry in display_co!\n");
     current_coro = &coros[2];
 
     if (setjmp(current_coro->env) == 0)
         longjmp(sched_env, 3);
 
-    printf("In display_co\n");
-
-    if (pause_attr)
-        longjmp(sched_env, 3);
+    LOG_DEBUG("In display_co\n");
 
     repaint_screen();
 
@@ -315,7 +314,7 @@ static void listen_keyboard_handler(void)
             pause_attr ^= 1;
             write(attr_fd, buf, 6);
             if (!pause_attr)
-                printf("Stopping to display the chess board...\n");
+                LOG_DEBUG("Stopping to display the chess board...\n");
             break;
         case 17: /* Ctrl+Q */
             read(attr_fd, buf, 6);
@@ -323,7 +322,7 @@ static void listen_keyboard_handler(void)
             pause_attr = false;
             end_attr = true;
             write(attr_fd, buf, 6);
-            printf("Stopping the kernel space tic-tac-toe game...\n");
+            LOG_DEBUG("Stopping the kernel space tic-tac-toe game...\n");
             break;
         }
     }
@@ -333,13 +332,13 @@ static void listen_keyboard_handler(void)
 
 void printer()
 {
-    printf("\033[2J\033[H");  // better escape, '[2J' clears entire screen while
-                              // '[H' moves to top left
+    printf("\033[H\033[J");
     for (int i = 0; i < game_count; i++) {
+        if (pause_attr)
+            printf("(PAUSED)");
         printf("============= Game: %d =============\n", i + 1);
         printf("%s\n", table_buf[i]);
     }
-    fflush(stdout);
 }
 
 
@@ -347,7 +346,7 @@ void user_print_board(unsigned char buf[2])
 {
     // printf("Trying to print board now...\n");
     if (buf[0] & 0x80) {
-        printf("Games have ended! Resesting boards...\n");
+        LOG_DEBUG("Games have ended! Resesting boards...\n");
         for (int k = 0; k < game_count; k++) {
             for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
                  j += (BOARD_SIZE << 2)) {
@@ -366,7 +365,7 @@ void user_print_board(unsigned char buf[2])
         (buf[1] / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf[1] % BOARD_SIZE << 1);
     table_buf[id][pos] = turn;
 
-    printf("Placed '%c' at [%d]\n", turn, pos);
+    LOG_DEBUG("Placed '%c' at [%d]\n", turn, pos);
     printer();
 }
 
@@ -396,7 +395,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    printf("ok, starting now...\n");
+    LOG_DEBUG("ok, starting now...\n");
 
     schedule();
 

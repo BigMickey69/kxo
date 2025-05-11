@@ -55,7 +55,7 @@ MODULE_DESCRIPTION("In-kernel Tic-Tac-Toe game engine v0.2");
 
 #define NR_KMLDRV 1
 
-static int delay = 200; /* time (in ms) to generate an event */
+static int delay = 1000; /* time (in ms) to generate an event */
 
 /* Declare kernel module attribute for sysfs */
 
