@@ -19,6 +19,7 @@
 #include "zobrist.h"
 
 #include "gamecount.h"
+#include "load.h"
 
 static struct game games[MAX_GAMES];
 static unsigned char check_won[MAX_GAMES];
@@ -33,6 +34,7 @@ struct ai_work {
 static struct ai_work ai_one_works[MAX_GAMES];
 static struct ai_work ai_two_works[MAX_GAMES];
 static struct ai_work drawboard_works[MAX_GAMES];
+static struct work_struct loadavg_works[MAX_GAMES];
 
 static struct mutex game_lock[MAX_GAMES];
 static DEFINE_MUTEX(read_lock);
@@ -55,10 +57,13 @@ MODULE_DESCRIPTION("In-kernel Tic-Tac-Toe game engine v0.2");
 
 #define NR_KMLDRV 1
 
-static int delay = 1000; /* time (in ms) to generate an event */
+static int delay = 500; /* time (in ms) to generate an event */
+
+/* Load average struct*/
+static struct kxo_loadavg O_load_logs[MAX_GAMES];
+static struct kxo_loadavg X_load_logs[MAX_GAMES];
 
 /* Declare kernel module attribute for sysfs */
-
 struct kxo_attr {
     char display;
     char resume;
@@ -238,6 +243,10 @@ exit:
     mutex_unlock(&game_lock[g->id]);
     tv_end = ktime_get();
     nsecs = (s64) ktime_to_ns(ktime_sub(tv_end, tv_start));
+
+    // log time
+    O_load_logs[g->id].active_nsec += nsecs;
+
     pr_info("kxo: [CPU#%d] did %s for %llu usec(game %u)\n", cpu, __func__,
             (unsigned long long) nsecs >> 10, g->id + 1);
     put_cpu();
@@ -293,20 +302,52 @@ exit:
     tv_end = ktime_get();
 
     nsecs = (s64) ktime_to_ns(ktime_sub(tv_end, tv_start));
+
+    // log time
+    X_load_logs[g->id].active_nsec += nsecs;
+
     pr_info("kxo: [CPU#%d] did %s for %llu usec\n", cpu, __func__,
             (unsigned long long) nsecs >> 10);
     put_cpu();
 }
 
-/* Work item: holds a pointer to the function that is going to be executed
- * asynchronously.
- */
 
-/*
-static DECLARE_WORK(drawboard_work, drawboard_work_func);
-static DECLARE_WORK(ai_one_work, ai_one_work_func);
-static DECLARE_WORK(ai_two_work, ai_two_work_func);
-*/
+static void loadavg_work_func(struct work_struct *w)
+{
+    read_lock(&attr_obj.lock);
+    if (attr_obj.display == '0') {
+        read_unlock(&attr_obj.lock);
+        return;
+    }
+    read_unlock(&attr_obj.lock);
+
+    // smart way to get game_id from memory layout
+    int id = w - loadavg_works;
+
+    const struct kxo_loadavg *o = &O_load_logs[id];
+    const struct kxo_loadavg *x = &X_load_logs[id];
+
+    unsigned int o5 = min((o->avg_5s * 200) >> FSHIFT, 200ul);
+    unsigned int x5 = min((x->avg_5s * 200) >> FSHIFT, 200ul);
+
+    unsigned char msg[2];
+
+    mutex_lock(&consumer_lock);
+
+    // send l1
+    msg[0] = 0b01000000 | id;
+    msg[1] = (unsigned char) o5;
+    kfifo_in(&rx_fifo, msg, 2);
+
+    // send l5 & l15
+    msg[0] = (unsigned char) x5;
+    msg[1] = 0;
+    kfifo_in(&rx_fifo, msg, 2);
+
+    mutex_unlock(&consumer_lock);
+
+    wake_up_interruptible(&rx_wait);
+}
 
 /* Tasklet handler.
  *
@@ -340,7 +381,6 @@ static void game_tasklet_func(unsigned long __data)
     }
 
 
-
     for (int i = 0; i < game_count; i++) {
         struct game *g = &games[i];
 
@@ -362,10 +402,31 @@ static void game_tasklet_func(unsigned long __data)
 static DECLARE_TASKLET_OLD(game_tasklet, game_tasklet_func);
 
 
+
+static void update_load(struct kxo_loadavg *stat, s64 total_nsec)
+{
+    unsigned long ratio;
+
+    if (total_nsec == 0) {
+        stat->active_nsec = 0;
+        return;
+    }
+
+    ratio = div_u64((u64) stat->active_nsec * FIXED_1, total_nsec);
+
+    stat->avg_5s =
+        (stat->avg_5s * EXP_5S + ratio * (FIXED_1 - EXP_5S)) >> FSHIFT;
+
+    stat->active_nsec = 0;
+}
+
+
 static void timer_handler(struct timer_list *__timer)
 {
     ktime_t tv_start, tv_end;
     s64 nsecs;
+    static ktime_t last_tick_time;
+    s64 delta;
 
     pr_info("kxo: [CPU#%d] enter %s\n", smp_processor_id(), __func__);
     /* We are using a kernel timer to simulate a hard-irq, so we must expect
@@ -377,6 +438,19 @@ static void timer_handler(struct timer_list *__timer)
     local_irq_disable();
 
     tv_start = ktime_get();
+
+    // calculate delta
+    if (unlikely(!last_tick_time))
+        delta = 0;
+    else
+        delta = ktime_to_ns(ktime_sub(tv_start, last_tick_time));
+    last_tick_time = tv_start;
+
+    for (int i = 0; i < game_count; i++) {
+        update_load(&O_load_logs[i], delta);
+        update_load(&X_load_logs[i], delta);
+        queue_work(kxo_workqueue, &loadavg_works[i]);
+    }
 
     // Just mod the next timer.
     tasklet_schedule(&game_tasklet);
@@ -448,17 +522,22 @@ static int kxo_release(struct inode *inode, struct file *filp)
         fast_buf_clear();
     }
     pr_info("release, current cnt: %d\n", atomic_read(&open_cnt));
+    attr_obj.end = '0';
 
     return 0;
 }
 
+
 static const struct file_operations kxo_fops = {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
+    .owner = THIS_MODULE,
+#endif
     .read = kxo_read,
     .llseek = no_llseek,
     .open = kxo_open,
     .release = kxo_release,
-    .owner = THIS_MODULE,
 };
+
 
 static int __init kxo_init(void)
 {
@@ -501,28 +580,22 @@ static int __init kxo_init(void)
     ret = device_create_file(kxo_dev, &dev_attr_kxo_state);
     if (ret < 0) {
         printk(KERN_ERR "failed to create sysfs file kxo_state\n");
-        goto error_cdev;
+        goto error_device;
     }
 
     /* Allocate fast circular buffer */
     fast_buf.buf = vmalloc(PAGE_SIZE);
     if (!fast_buf.buf) {
-        device_destroy(kxo_class, dev_id);
-        class_destroy(kxo_class);
         ret = -ENOMEM;
-        goto error_cdev;
+        goto error_vmalloc;
     }
 
     /* Create the workqueue */
     kxo_workqueue = alloc_workqueue("kxod", WQ_UNBOUND, WQ_MAX_ACTIVE);
     if (!kxo_workqueue) {
-        vfree(fast_buf.buf);
-        device_destroy(kxo_class, dev_id);
-        class_destroy(kxo_class);
         ret = -ENOMEM;
-        goto error_cdev;
+        goto error_workqueue;
     }
-
     negamax_init();
     mcts_init();
 
@@ -540,8 +613,7 @@ static int __init kxo_init(void)
         INIT_WORK(&ai_two_works[i].work, ai_two_work_func);
         ai_two_works[i].game = &games[i];
 
-        // INIT_WORK(&drawboard_works[i].work, drawboard_work_func);
-        // drawboard_works[i].game = &games[i];
+        INIT_WORK(&loadavg_works[i], loadavg_work_func);
     }
 
     attr_obj.display = '1';
@@ -555,6 +627,12 @@ static int __init kxo_init(void)
     pr_info("kxo: registered new kxo device: %d,%d\n", major, 0);
 out:
     return ret;
+error_workqueue:
+    vfree(fast_buf.buf);
+error_vmalloc:
+    device_destroy(kxo_class, dev_id);
+error_device:
+    class_destroy(kxo_class);
 error_cdev:
     cdev_del(&kxo_cdev);
 error_region:
@@ -563,7 +641,6 @@ error_alloc:
     kfifo_free(&rx_fifo);
     goto out;
 }
-
 static void __exit kxo_exit(void)
 {
     dev_t dev_id = MKDEV(major, 0);

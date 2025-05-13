@@ -13,7 +13,9 @@
         "version.h": "c",
         "workqueue.h": "c",
         "vmalloc.h": "c",
-        "setjmp.h": "c"
+        "setjmp.h": "c",
+        "gamecount.h": "c",
+        "types.h": "c"
     },
     "C_Cpp.default.defines": [
         "__init="

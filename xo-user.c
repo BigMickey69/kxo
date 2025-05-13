@@ -23,8 +23,8 @@ struct {
     char move[3];
 } move_logs[MAX_GAMES][N_GRIDS];
 static int log_count[MAX_GAMES];
-static int load_O_tenths[MAX_GAMES];
-static int load_X_tenths[MAX_GAMES];
+static unsigned char load_O[MAX_GAMES];
+static unsigned char load_X[MAX_GAMES];
 
 
 #include "gamecount.h"
@@ -129,15 +129,6 @@ static void update_board_and_stats(unsigned const char buf[READ_DATA_SIZE])
         memcpy(move_logs[g][log_count[g]++].move, m, sizeof(m));
         LOG_DEBUG("Logged move %s: '%c'\n", m, turn);
     }
-
-    // 3) load update (stub: kernel must send timing)
-    // TODO: decode timing from kernel message
-    int usec = 0;
-    int pct10 = usec * 1000 / 1000000;
-    if (turn == 'O')
-        load_O_tenths[g] = (load_O_tenths[g] * 9 + pct10) / 10;
-    else
-        load_X_tenths[g] = (load_X_tenths[g] * 9 + pct10) / 10;
 }
 
 
@@ -156,9 +147,7 @@ static inline void repaint_screen(void)
 
     // boards, loads, move logs
     for (int g = 0; g < game_count; g++) {
-        printf("=== Game %d ===  Load O: %2d.%01d%%  X: %2d.%01d%%\n", g + 1,
-               load_O_tenths[g] / 10, load_O_tenths[g] % 10,
-               load_X_tenths[g] / 10, load_X_tenths[g] % 10);
+        printf("=========== Game %d ===========\n", g + 1);
         printf("%s\n", table_buf[g]);
         printf("Moves: ");
         for (int i = 0; i < log_count[g]; i++) {
@@ -167,6 +156,10 @@ static inline void repaint_screen(void)
                 printf(" -> ");
         }
         printf("\n");
+        printf("    [O Load_avg(5s)]: %u.%d\n", load_O[g] >> 1,
+               load_O[g] & 1 ? 5 : 0);
+        printf("    [X Load_avg(5s)]: %u.%d\n", load_X[g] >> 1,
+               load_X[g] & 1 ? 5 : 0);
     }
     LOG_DEBUG("Finished printing screen >W<\n");
 }
@@ -208,7 +201,8 @@ static void schedule(void)
     for (;;) {
         int r = setjmp(sched_env) % 3;
         if (end_attr)
-            break;
+            return;
+
         current_coro = &coros[r];
 
         if (!current_coro->alive)
@@ -240,15 +234,31 @@ static void io_co(void)
     }
 
     // drain stdin
+    int attr_fd = open(XO_DEVICE_ATTR_FILE, O_RDWR);
     if (FD_ISSET(STDIN_FILENO, &rfds)) {
-        char ch;
+        char buff[20];
         FD_CLR(STDIN_FILENO, &rfds);
-        read(STDIN_FILENO, &ch, 1) == 1;
-        if (ch == 16)
-            pause_attr = !pause_attr;
-        if (ch == 17)
+        read(STDIN_FILENO, &buff[0], 1) == 1;
+        switch (buff[0]) {
+        case 16:
+            read(attr_fd, buff, 6);
+            buff[0] = (buff[0] - '0') ? '0' : '1';
+            pause_attr ^= 1;
+            write(attr_fd, buff, 6);
+            break;
+        // ESC
+        case 27:
+            read(attr_fd, buff, 6);
+            buff[4] = '1';
+            pause_attr = false;
             end_attr = true;
+            printf("YEAHH EXIT!!!\n");
+            write(attr_fd, buff, 6);
+            LOG_DEBUG("Stopping the kernel space tic-tac-toe game...\n");
+            break;
+        }
     }
+    close(attr_fd);
 
     if (pause_attr)
         longjmp(sched_env, 1);
@@ -257,7 +267,17 @@ static void io_co(void)
     if (FD_ISSET(device_fd, &rfds)) {
         FD_CLR(device_fd, &rfds);
         read(device_fd, buf, READ_DATA_SIZE);
-        update_board_and_stats(buf);
+        // Check load_avg signal
+        if (buf[0] & 0b01000000) {
+            buf[0] <<= 2;
+            int id = buf[0] >> 2;
+            load_O[id] = buf[1];
+
+            read(device_fd, buf, READ_DATA_SIZE);
+            load_X[id] = buf[0];
+        } else {
+            update_board_and_stats(buf);
+        }
     }
 
     longjmp(sched_env, 1);
@@ -299,75 +319,6 @@ static void display_co(void)
     longjmp(sched_env, 3);
 }
 
-
-static void listen_keyboard_handler(void)
-{
-    int attr_fd = open(XO_DEVICE_ATTR_FILE, O_RDWR);
-    char input;
-
-    if (read(STDIN_FILENO, &input, 1) == 1) {
-        char buf[20];
-        switch (input) {
-        case 16: /* Ctrl+P */
-            read(attr_fd, buf, 6);
-            buf[0] = (buf[0] - '0') ? '0' : '1';
-            pause_attr ^= 1;
-            write(attr_fd, buf, 6);
-            if (!pause_attr)
-                LOG_DEBUG("Stopping to display the chess board...\n");
-            break;
-        case 17: /* Ctrl+Q */
-            read(attr_fd, buf, 6);
-            buf[4] = '1';
-            pause_attr = false;
-            end_attr = true;
-            write(attr_fd, buf, 6);
-            LOG_DEBUG("Stopping the kernel space tic-tac-toe game...\n");
-            break;
-        }
-    }
-    close(attr_fd);
-}
-
-
-void printer()
-{
-    printf("\033[H\033[J");
-    for (int i = 0; i < game_count; i++) {
-        if (pause_attr)
-            printf("(PAUSED)");
-        printf("============= Game: %d =============\n", i + 1);
-        printf("%s\n", table_buf[i]);
-    }
-}
-
-
-void user_print_board(unsigned char buf[2])
-{
-    // printf("Trying to print board now...\n");
-    if (buf[0] & 0x80) {
-        LOG_DEBUG("Games have ended! Resesting boards...\n");
-        for (int k = 0; k < game_count; k++) {
-            for (int j = 0; j < (BOARD_SIZE << 1) * (BOARD_SIZE << 1);
-                 j += (BOARD_SIZE << 2)) {
-                for (int i = 0; i < BOARD_SIZE; i++)
-                    table_buf[k][(i << 1) + j] = ' ';
-            }
-        }
-        return;  // return after all boards have been reset!
-    }
-
-    unsigned char id = buf[0];
-    char turn = buf[1] & 1 ? 'O' : 'X';
-    buf[1] >>= 1;
-
-    int pos =
-        (buf[1] / BOARD_SIZE) * (BOARD_SIZE << 2) + (buf[1] % BOARD_SIZE << 1);
-    table_buf[id][pos] = turn;
-
-    LOG_DEBUG("Placed '%c' at [%d]\n", turn, pos);
-    printer();
-}
 
 int main(int argc, char *argv[])
 {
